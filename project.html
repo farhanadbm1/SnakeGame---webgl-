@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Classic Snake Game</title>
+    <style>
+        canvas {
+            border: 1px solid black;
+            display: block;
+            margin: 0 auto;
+            background-color: #f0f0f0;
+            cursor: none; /* Hide the cursor */
+        }
+        #score {
+            text-align: center;
+            font-size: 24px;
+            margin-top: 10px;
+        }
+        #gameOver {
+            text-align: center;
+            font-size: 32px;
+            color: red;
+            display: none;
+        }
+        #restart {
+            text-align: center;
+            margin-top: 10px;
+            display: none;
+        }
+        #restart button {
+            padding: 10px 20px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="glCanvas" width="600" height="600"></canvas>
+    <div id="score">Score: 0</div>
+    <div id="gameOver">Game Over!</div>
+    <div id="restart">
+        <button onclick="startGame()">Restart</button>
+    </div>
+
+    <script>
+        // Vertex shader program
+        const vsSource = `
+            attribute vec2 aPosition;
+            uniform vec2 uResolution;
+            void main() {
+                vec2 zeroToOne = aPosition / uResolution;
+                vec2 zeroToTwo = zeroToOne * 2.0;
+                vec2 clipSpace = zeroToTwo - 1.0;
+                gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1);
+            }
+        `;
+
+        // Fragment shader program
+        const fsSource = `
+            precision mediump float;
+            uniform vec4 uColor;
+            void main() {
+                gl_FragColor = uColor;
+            }
+        `;
+
+        // Initialize WebGL context
+        const canvas = document.getElementById('glCanvas');
+        const gl = canvas.getContext('webgl');
+
+        if (!gl) {
+            alert('WebGL not supported, falling back on experimental-webgl');
+            gl = canvas.getContext('experimental-webgl');
+        }
+
+        if (!gl) {
+            alert('Your browser does not support WebGL');
+        }
+
+        // Compile shader
+        function loadShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                alert('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+
+            return shader;
+        }
+
+        // Initialize shader program
+        function initShaderProgram(gl, vsSource, fsSource) {
+            const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+            const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+
+            const shaderProgram = gl.createProgram();
+            gl.attachShader(shaderProgram, vertexShader);
+            gl.attachShader(shaderProgram, fragmentShader);
+            gl.linkProgram(shaderProgram);
+
+            if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+                alert('Unable to initialize the shader program: ' + gl.getProgramInfoLog(shaderProgram));
+                return null;
+            }
+
+            return shaderProgram;
+        }
+
+        const shaderProgram = initShaderProgram(gl, vsSource, fsSource);
+        const programInfo = {
+            program: shaderProgram,
+            attribLocations: {
+                vertexPosition: gl.getAttribLocation(shaderProgram, 'aPosition'),
+            },
+            uniformLocations: {
+                resolution: gl.getUniformLocation(shaderProgram, 'uResolution'),
+                color: gl.getUniformLocation(shaderProgram, 'uColor'),
+            },
+        };
+
+        // Initialize buffers
+        function initBuffer(gl) {
+            const positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            return positionBuffer;
+        }
+
+        const positionBuffer = initBuffer(gl);
+
+        // Game variables
+        const gridSize = 20; // Size of the grid
+        const gridWidth = Math.floor(canvas.width / gridSize);
+        const gridHeight = Math.floor(canvas.height / gridSize);
+
+        let snake = [];
+        let direction = { x: 1, y: 0 }; // Initial direction: right
+        let nextDirection = { x: 1, y: 0 };
+        let frog = { x: 0, y: 0 };
+        let score = 0;
+        let snakeColor = [0, 1, 0, 1]; // Initial color: green
+        let gameOver = false;
+
+        let moveInterval = null;
+        const moveSpeed = 200; // Milliseconds per move
+
+        // Initialize the game
+        function startGame() {
+            // Reset variables
+            snake = [{ x: Math.floor(gridWidth / 2), y: Math.floor(gridHeight / 2) }];
+            direction = { x: 1, y: 0 };
+            nextDirection = { x: 1, y: 0 };
+            score = 0;
+            document.getElementById('score').innerText = 'Score: ' + score;
+            snakeColor = [0, 1, 0, 1];
+            gameOver = false;
+            document.getElementById('gameOver').style.display = 'none';
+            document.getElementById('restart').style.display = 'none';
+
+            placeFrog();
+
+            // Start movement loop
+            if (moveInterval) clearInterval(moveInterval);
+            moveInterval = setInterval(gameLoop, moveSpeed);
+        }
+
+        // Handle keyboard input
+        window.addEventListener('keydown', function(event) {
+            switch(event.key) {
+                case 'ArrowUp':
+                    if (direction.y === 0) {
+                        nextDirection = { x: 0, y: -1 };
+                    }
+                    break;
+                case 'ArrowDown':
+                    if (direction.y === 0) {
+                        nextDirection = { x: 0, y: 1 };
+                    }
+                    break;
+                case 'ArrowLeft':
+                    if (direction.x === 0) {
+                        nextDirection = { x: -1, y: 0 };
+                    }
+                    break;
+                case 'ArrowRight':
+                    if (direction.x === 0) {
+                        nextDirection = { x: 1, y: 0 };
+                    }
+                    break;
+            }
+        });
+
+        // Utility function to get random integer
+        function getRandomInt(min, max) {
+            return Math.floor(Math.random() * (max - min)) + min;
+        }
+
+        // Place frog at a random position not occupied by the snake
+        function placeFrog() {
+            while (true) {
+                const newFrog = { x: getRandomInt(0, gridWidth), y: getRandomInt(0, gridHeight) };
+                // Ensure the frog is not placed on the snake
+                if (!snake.some(segment => segment.x === newFrog.x && segment.y === newFrog.y)) {
+                    frog = newFrog;
+                    break;
+                }
+            }
+        }
+
+        // Update game state
+        function update() {
+            direction = nextDirection; // Update direction based on input
+
+            const head = { ...snake[0] }; // Current head
+
+            // Move the head in the current direction
+            head.x += direction.x;
+            head.y += direction.y;
+
+            // Collision with walls
+            if (head.x < 0 || head.x >= gridWidth || head.y < 0 || head.y >= gridHeight) {
+                gameOver = true;
+                return;
+            }
+
+            // Collision with itself
+            if (snake.some(segment => segment.x === head.x && segment.y === head.y)) {
+                gameOver = true;
+                return;
+            }
+
+            // Check if snake eats the frog
+            if (head.x === frog.x && head.y === frog.y) {
+                score += 1;
+                document.getElementById('score').innerText = 'Score: ' + score;
+                snakeColor = [Math.random(), Math.random(), Math.random(), 1]; // Change color
+                snake.unshift(head); // Grow the snake
+                placeFrog(); // Place a new frog
+            } else {
+                // Move the snake
+                snake.unshift(head); // Add new head
+                snake.pop(); // Remove tail
+            }
+        }
+
+        // Draw rectangle
+        function drawRect(x, y, size, color) {
+            const vertices = [
+                x, y,
+                x + size, y,
+                x, y + size,
+                x, y + size,
+                x + size, y,
+                x + size, y + size,
+            ];
+
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+
+            gl.useProgram(programInfo.program);
+
+            gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.vertexAttribPointer(
+                programInfo.attribLocations.vertexPosition,
+                2, // numComponents
+                gl.FLOAT, // type
+                false, // normalize
+                0, // stride
+                0 // offset
+            );
+
+            gl.uniform2f(programInfo.uniformLocations.resolution, canvas.width, canvas.height);
+            gl.uniform4fv(programInfo.uniformLocations.color, color);
+
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+        }
+
+        // Render the game
+        function render() {
+            gl.clearColor(240 / 255, 240 / 255, 240 / 255, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+
+            // Draw frog as a circle approximation using a small square
+            drawRect(
+                frog.x * gridSize,
+                frog.y * gridSize,
+                gridSize,
+                [1, 0, 0, 1] // Red frog
+            );
+
+            // Draw snake
+            for (let segment of snake) {
+                drawRect(
+                    segment.x * gridSize,
+                    segment.y * gridSize,
+                    gridSize,
+                    snakeColor
+                );
+            }
+        }
+
+        // Handle game over
+        function handleGameOver() {
+            clearInterval(moveInterval);
+            document.getElementById('gameOver').style.display = 'block';
+            document.getElementById('restart').style.display = 'block';
+        }
+
+        // Game loop
+        function gameLoop() {
+            update();
+            if (gameOver) {
+                handleGameOver();
+                return;
+            }
+            render();
+        }
+
+        // Start the game on page load
+        startGame();
+    </script>
+</body>
+</html>
